@@ -1,0 +1,18 @@
+/var/log/gunicorn/*.log {
+    # Rotate logs daily.
+    daily
+    # Do not show an error if the file does not exist.
+    missingok
+    # Keep the last 8 logs.
+    rotate 8
+    # Compress old logs.
+    compress
+    # Compress them one day after rotation.
+    delaycompress
+    # Do not rotate if the file is empty.
+    notifempty
+    # Copy the log and truncate the original file.
+    copytruncate
+    # Add su directive to avoid permission issues.
+    su admin admin
+}

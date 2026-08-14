@@ -1,0 +1,49 @@
+#
+# Docker Compose file for the Derafu Sites Server.
+#
+# This file is used to configure the docker container for the Derafu Sites Server.
+#
+
+services:
+
+  # Main web server service using Django and Caddy.
+  webserver:
+
+    # Build configuration for the container.
+    build:
+      context: .  # Use the current directory as build context.
+      dockerfile: Dockerfile  # Use the Dockerfile in the current directory.
+      args:
+        # Build arguments passed to the Dockerfile.
+        CADDY_DEBUG: ${CADDY_DEBUG:-}  # Debug mode for Caddy.
+        WWW_ROOT_PATH: ${WWW_ROOT_PATH:-/var/www/sites}  # Root path for websites.
+        WWW_USER: ${WWW_USER:-admin}  # User for web server operations.
+        WWW_GROUP: ${WWW_GROUP:-www-data}  # Group for web server operations.
+        PHPY_ENABLED: ${PHPY_ENABLED:-false}  # Build PHP (--enable-embed) + phpy so Python can host PHP.
+        PHPY_PHP_VERSION: ${PHPY_PHP_VERSION:-8.5.3}  # PHP version to build when PHPY_ENABLED=true.
+
+    # Name of the container.
+    container_name: ${SERVER_NAME:-python314-caddy}
+
+    # Environment variables passed to the container.
+    environment:
+      SERVER_NAME: ${SERVER_NAME:-python314-caddy}  # Server name.
+      CADDY_DEBUG: ${CADDY_DEBUG:-}  # Debug mode for Caddy.
+      CADDY_EMAIL: ${CADDY_EMAIL:-admin@example.com}  # Email for Caddy SSL certificates.
+      CADDY_LOG_SIZE: ${CADDY_LOG_SIZE:-100mb}  # Maximum size of Caddy logs.
+      CADDY_LOG_KEEP: ${CADDY_LOG_KEEP:-5}  # Number of log files to keep.
+      CADDY_HTTPS_ALLOW_ANY_HOST: ${CADDY_HTTPS_ALLOW_ANY_HOST:-false}
+      CADDY_HTTPS_ISSUER: ${CADDY_HTTPS_ISSUER:-internal}  # HTTPS certificate issuer.
+      WWW_ROOT_PATH: ${WWW_ROOT_PATH:-/var/www/sites}  # Root path for websites.
+      WWW_USER: ${WWW_USER:-admin}  # User for web server operations.
+      SITES_DIR: ${SITES_DIR:-/home/admin/sites}  # Directory for site configurations.
+      EDITOR: ${EDITOR:-vim}  # Default text editor.
+      VISUAL: ${VISUAL:-vim}  # Default visual editor.
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}  # Secret for GitHub webhooks.
+
+    # Restart policy for the container.
+    restart: unless-stopped
+
+    # Volume mappings for persistent data.
+    volumes:
+      - ${VOLUME_SITES:-./sites}:${WWW_ROOT_PATH:-/var/www/sites}  # Sites directory.
