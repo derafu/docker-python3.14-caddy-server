@@ -172,11 +172,11 @@ RUN \
     && ssh-keyscan github.com >> /etc/ssh/ssh_known_hosts \
     && chmod 644 /etc/ssh/ssh_known_hosts
 
-# Optional: build PHP (--enable-embed) and phpy, so Python can host PHP code
-# (e.g. via derafu/backbone-bridge-python). Skipped entirely unless
-# PHPY_ENABLED=true, so the default build stays as fast as before.
+# Optional: build PHP (--enable-embed), phpy, and Composer, so Python can host
+# PHP libraries (e.g. derafu/backbone-bridge-python + LibreDTE dispatcher).
+# Skipped entirely unless PHPY_ENABLED=true.
 RUN if [ "$PHPY_ENABLED" = "true" ]; then \
-        echo "PHPY_ENABLED=true: building PHP ${PHPY_PHP_VERSION} with --enable-embed and installing phpy..." \
+        echo "PHPY_ENABLED=true: building PHP ${PHPY_PHP_VERSION} with --enable-embed, phpy and Composer..." \
         && apt-get update && apt-get install -y --no-install-recommends \
             pkg-config \
             autoconf \
@@ -200,6 +200,9 @@ RUN if [ "$PHPY_ENABLED" = "true" ]; then \
             --enable-soap \
             --enable-intl \
             --enable-bcmath \
+            --enable-gd \
+            --with-freetype \
+            --with-jpeg \
             --with-zip \
             --disable-cgi \
             --disable-phpdbg \
@@ -210,6 +213,8 @@ RUN if [ "$PHPY_ENABLED" = "true" ]; then \
         && cd /opt/phpy \
         && PHP_CONFIG=/opt/php/bin/php-config pip install --break-system-packages . \
         && cd / && rm -rf /opt/phpy \
+        && curl -sS https://getcomposer.org/installer \
+            | /opt/php/bin/php -- --install-dir=/opt/php/bin --filename=composer \
     ; else \
         echo "PHPY_ENABLED=false: skipping PHP/phpy build."; \
     fi
