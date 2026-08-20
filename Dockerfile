@@ -107,18 +107,39 @@ RUN \
     && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends caddy \
+    # Playwright/Chromium runtime libs for Debian Trixie (python:3.14).
+    # Playwright 1.52 does not know Trixie and `install-deps` falls back to
+    # Ubuntu 20.04 packages that do not exist here; install the Trixie
+    # equivalents so host validation passes without that step.
     && apt-get install -y --no-install-recommends \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libxkbcommon0 \
-    libatspi2.0-0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
+    fonts-liberation \
+    fonts-unifont \
     libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgdk-pixbuf-2.0-0 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libpango-1.0-0 \
+    libx11-6 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxkbcommon0 \
+    libxrandr2 \
+    libxrender1 \
+    libxshmfence1 \
     && rm -rf /var/lib/apt/lists/* \
     \
     # Create SSH directory.
