@@ -204,6 +204,7 @@ RUN if [ "$PHPY_ENABLED" = "true" ]; then \
             --with-freetype \
             --with-jpeg \
             --with-zip \
+            --with-zlib \
             --disable-cgi \
             --disable-phpdbg \
         && make -j"$(nproc)" \
