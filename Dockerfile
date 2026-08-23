@@ -107,18 +107,39 @@ RUN \
     && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends caddy \
+    # Playwright/Chromium runtime libs for Debian Trixie (python:3.14).
+    # Playwright 1.52 does not know Trixie and `install-deps` falls back to
+    # Ubuntu 20.04 packages that do not exist here; install the Trixie
+    # equivalents so host validation passes without that step.
     && apt-get install -y --no-install-recommends \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libxkbcommon0 \
-    libatspi2.0-0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
+    fonts-liberation \
+    fonts-unifont \
     libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgdk-pixbuf-2.0-0 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libpango-1.0-0 \
+    libx11-6 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxkbcommon0 \
+    libxrandr2 \
+    libxrender1 \
+    libxshmfence1 \
     && rm -rf /var/lib/apt/lists/* \
     \
     # Create SSH directory.
@@ -151,11 +172,11 @@ RUN \
     && ssh-keyscan github.com >> /etc/ssh/ssh_known_hosts \
     && chmod 644 /etc/ssh/ssh_known_hosts
 
-# Optional: build PHP (--enable-embed) and phpy, so Python can host PHP code
-# (e.g. via derafu/backbone-bridge-python). Skipped entirely unless
-# PHPY_ENABLED=true, so the default build stays as fast as before.
+# Optional: build PHP (--enable-embed), phpy, and Composer, so Python can host
+# PHP libraries (e.g. derafu/backbone-bridge-python + LibreDTE dispatcher).
+# Skipped entirely unless PHPY_ENABLED=true.
 RUN if [ "$PHPY_ENABLED" = "true" ]; then \
-        echo "PHPY_ENABLED=true: building PHP ${PHPY_PHP_VERSION} with --enable-embed and installing phpy..." \
+        echo "PHPY_ENABLED=true: building PHP ${PHPY_PHP_VERSION} with --enable-embed, phpy and Composer..." \
         && apt-get update && apt-get install -y --no-install-recommends \
             pkg-config \
             autoconf \
@@ -179,7 +200,11 @@ RUN if [ "$PHPY_ENABLED" = "true" ]; then \
             --enable-soap \
             --enable-intl \
             --enable-bcmath \
+            --enable-gd \
+            --with-freetype \
+            --with-jpeg \
             --with-zip \
+            --with-zlib \
             --disable-cgi \
             --disable-phpdbg \
         && make -j"$(nproc)" \
@@ -189,6 +214,8 @@ RUN if [ "$PHPY_ENABLED" = "true" ]; then \
         && cd /opt/phpy \
         && PHP_CONFIG=/opt/php/bin/php-config pip install --break-system-packages . \
         && cd / && rm -rf /opt/phpy \
+        && curl -sS https://getcomposer.org/installer \
+            | /opt/php/bin/php -- --install-dir=/opt/php/bin --filename=composer \
     ; else \
         echo "PHPY_ENABLED=false: skipping PHP/phpy build."; \
     fi

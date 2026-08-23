@@ -116,7 +116,7 @@ docker compose up -d
 ```
 
 When enabled, the embed-enabled PHP build lives at `/opt/php` (`php`, `php-config`,
-`phpize` on `PATH`), and `phpy` is installed into the container's Python.
+`phpize`, `composer` on `PATH`), and `phpy` is installed into the container's Python.
 Verify it works with:
 
 ```bash
@@ -284,7 +284,7 @@ Customize behavior through environment variables:
 | `HTTP_PORT`                  | HTTP port in host                 | 8080                |
 | `HTTPS_PORT`                 | HTTPS port in host                | 8443                |
 | `SSH_PORT`                   | SSH port in host                  | 2222                |
-| `PHPY_ENABLED`               | Build PHP (`--enable-embed`) + phpy | false             |
+| `PHPY_ENABLED`               | Build PHP (`--enable-embed`) + phpy + Composer | false             |
 | `PHPY_PHP_VERSION`           | PHP version to build when `PHPY_ENABLED=true` | 8.5.3    |
 
 ## Domain Logic
