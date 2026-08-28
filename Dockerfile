@@ -210,6 +210,12 @@ RUN if [ "$PHPY_ENABLED" = "true" ]; then \
         && make -j"$(nproc)" \
         && make install \
         && cd / && rm -rf /usr/src/php \
+        # PHP detects stack overflows against the stack of the main thread,
+        # so calling it from another one -as phpy does when it is embedded
+        # in a web application- aborts the first function it runs. Only -1
+        # avoids it: the problem is not the limit but what it measures from.
+        && mkdir -p /opt/php/lib \
+        && printf 'zend.max_allowed_stack_size=-1\n' > /opt/php/lib/php.ini \
         && git clone https://github.com/swoole/phpy.git /opt/phpy \
         && cd /opt/phpy \
         && PHP_CONFIG=/opt/php/bin/php-config pip install --break-system-packages . \
