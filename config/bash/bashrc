@@ -2,6 +2,11 @@
 export EDITOR=$(sudo cat /proc/1/environ | tr '\0' '\n' | grep EDITOR | cut -d= -f2)
 export VISUAL=$(sudo cat /proc/1/environ | tr '\0' '\n' | grep VISUAL | cut -d= -f2)
 export SITES_DIR=$(sudo cat /proc/1/environ | tr '\0' '\n' | grep SITES_DIR | cut -d= -f2)
+# DEPLOYER_DIR/DEPLOYER_HOST: no effect yet. docker-compose.yml does not
+# pass either into the container's environment (unlike SITES_DIR above),
+# so these are always empty here. They're read by the functions below on
+# the assumption that derafu/python-fabric-deployer is installed at
+# DEPLOYER_DIR — external tooling, not part of this image.
 export DEPLOYER_DIR=$(sudo cat /proc/1/environ | tr '\0' '\n' | grep DEPLOYER_DIR | cut -d= -f2)
 export DEPLOYER_HOST=$(sudo cat /proc/1/environ | tr '\0' '\n' | grep DEPLOYER_HOST | cut -d= -f2)
 

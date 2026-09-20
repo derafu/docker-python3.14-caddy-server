@@ -23,11 +23,11 @@ services:
         PHPY_PHP_VERSION: ${PHPY_PHP_VERSION:-8.5.3}  # PHP version to build when PHPY_ENABLED=true.
 
     # Name of the container.
-    container_name: ${SERVER_NAME:-python314-caddy}
+    container_name: ${SERVER_NAME:-derafu-sites-server-python-caddy}
 
     # Environment variables passed to the container.
     environment:
-      SERVER_NAME: ${SERVER_NAME:-python314-caddy}  # Server name.
+      SERVER_NAME: ${SERVER_NAME:-derafu-sites-server-python-caddy}  # Server name.
       CADDY_DEBUG: ${CADDY_DEBUG:-}  # Debug mode for Caddy.
       CADDY_EMAIL: ${CADDY_EMAIL:-admin@example.com}  # Email for Caddy SSL certificates.
       CADDY_LOG_SIZE: ${CADDY_LOG_SIZE:-100mb}  # Maximum size of Caddy logs.
@@ -39,7 +39,11 @@ services:
       SITES_DIR: ${SITES_DIR:-/home/admin/sites}  # Directory for site configurations.
       EDITOR: ${EDITOR:-vim}  # Default text editor.
       VISUAL: ${VISUAL:-vim}  # Default visual editor.
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}  # Secret for GitHub webhooks.
+      # Secret for GitHub webhooks. No effect yet in this repo: the Caddyfile
+      # proxies /api/webhook to unix//run/webhook/admin.sock, but nothing
+      # here creates that socket or reads this secret — the receiver is
+      # external tooling (not part of this image).
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
 
     # Restart policy for the container.
     restart: unless-stopped

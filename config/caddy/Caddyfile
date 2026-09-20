@@ -187,6 +187,12 @@
 	}
 
 	# Handle webhooks.
+	#
+	# No effect yet: nothing in this image creates
+	# unix//run/webhook/admin.sock (no supervisord program, no script) or
+	# reads GITHUB_WEBHOOK_SECRET — the receiver is external tooling, not
+	# part of this repo. Requests to /api/webhook currently just fail to
+	# connect to a socket that doesn't exist.
 	@webhook path /api/webhook
 	handle @webhook {
 		reverse_proxy unix//run/webhook/admin.sock

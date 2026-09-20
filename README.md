@@ -36,12 +36,22 @@ A modern Docker setup for hosting Python websites with Caddy web server and SSH 
    cd docker-python3.14-caddy-server
    ```
 
-2. Add your SSH public key to `config/ssh/authorized_keys` for admin, and default deployment, access:
+2. Copy the environment and override templates (both are gitignored, so a
+   fresh clone starts without them):
+   ```bash
+   cp .env-dist .env
+   cp docker-compose.override-example.yml docker-compose.override.yml
+   ```
+   `docker-compose.override.yml` is where the HTTP/HTTPS/SSH ports are
+   actually mapped to the host — without it, `docker-compose up -d` starts
+   the container with no ports exposed at all.
+
+3. Add your SSH public key to `config/ssh/authorized_keys` for admin, and default deployment, access:
    ```bash
    cat ~/.ssh/id_rsa.pub > config/ssh/authorized_keys
    ```
 
-3. Build and start the container:
+4. Build and start the container:
    ```bash
    docker-compose up -d
    ```
@@ -81,7 +91,7 @@ The `-f` parameter allows you to follow logs in real-time.
 
 3. Run a single site manually
    ```bash
-   /scripts/start_sites.sh www.example.com
+   docker-compose exec webserver /scripts/start_procfile_supervisord.sh www.example.com
    ```
    Note: If no site is specified, the script will start all available sites under /var/www/sites.
 
@@ -132,7 +142,9 @@ exactly like a normal Python + Caddy image.
 docker-python3.14-caddy-server/
 ├── Dockerfile                  # Python + Caddy server base image definition (+ optional PHP/phpy)
 ├── docker-compose.yml          # Production Docker services and volumes
-├── .env                        # Environment variables for docker-compose
+├── docker-compose.override-example.yml  # Template: copy to docker-compose.override.yml
+├── .env-dist                   # Template: copy to .env
+├── .env                        # Environment variables for docker-compose (gitignored)
 ├── LICENSE                     # Project license
 ├── README.md                   # Main project documentation
 Configuration
@@ -140,7 +152,8 @@ Configuration
 │   ├── bash/
 │   │   └── bashrc              # Shell prompt / history tweaks for container user
 │   ├── caddy/
-│   │   └── Caddyfile           # Caddy reverse proxy rules (HTTPS, domains, routing)
+│   │   ├── Caddyfile           # Caddy reverse proxy rules (HTTPS, domains, routing)
+│   │   └── routes.d/           # Per-site path routes, generated from CADDY_ROUTE_PATH
 │   ├── cron/
 │   │   └── logrotate           # Cron job for rotating logs periodically
 │   ├── logrotate/
@@ -208,7 +221,7 @@ ssh admin@localhost -p 2222
 Access the container shell:
 
 ```bash
-docker exec -it derafu-sites-server-python-caddy bash
+docker-compose exec webserver bash
 ```
 
 ### Restarting Services
@@ -216,7 +229,7 @@ docker exec -it derafu-sites-server-python-caddy bash
 Restart Caddy web server:
 
 ```bash
-docker exec -it derafu-sites-server-python-caddy supervisorctl restart caddy
+docker-compose exec webserver supervisorctl restart caddy
 ```
 
 ### Stopping the Container
@@ -258,7 +271,12 @@ docker-compose -f docker-compose.yml up -d
    ```
    NOTE: It's important that the requirements.txt file includes the gunicorn dependency (Example gunicorn==23.0.0)
 
-3. No server restart required! Caddy automatically detects new sites.
+3. Start the site's processes (Caddy itself needs no restart — it detects
+   new sites automatically on the next request — but its gunicorn process
+   does need to be registered with supervisor at least once):
+   ```bash
+   docker-compose exec webserver /scripts/start_procfile_supervisord.sh www.newsite.com
+   ```
 
 4. For local development, add to your hosts file:
    ```
@@ -271,7 +289,7 @@ Customize behavior through environment variables:
 
 | Variable                     | Description                       | Default             |
 |------------------------------|-----------------------------------|---------------------|
-| `SERVER_NAME`                | Name for the docker container     | derafu-sites-server |
+| `SERVER_NAME`                | Name for the docker container     | derafu-sites-server-python-caddy |
 | `CADDY_DEBUG`                | Enable debug mode with `debug`    | (empty)             |
 | `CADDY_EMAIL`                | Email for Let's Encrypt           | admin@example.com   |
 | `CADDY_HTTPS_ISSUER`         | TLS issuer (internal, acme)       | internal            |
@@ -284,6 +302,9 @@ Customize behavior through environment variables:
 | `HTTP_PORT`                  | HTTP port in host                 | 8080                |
 | `HTTPS_PORT`                 | HTTPS port in host                | 8443                |
 | `SSH_PORT`                   | SSH port in host                  | 2222                |
+| `MANAGER_PORT`               | Port for the on-demand TLS endpoint (`/api/ask`) | 9090 |
+| `GITHUB_WEBHOOK_SECRET`      | **No effect yet.** Reserved for a `/api/webhook` receiver; no such service exists in this repo (external tooling) | (empty) |
+| `DEPLOYER_HOST`              | **No effect yet.** Not passed into the container by `docker-compose.yml`; expects `derafu/python-fabric-deployer` (external tooling) | (empty) |
 | `PHPY_ENABLED`               | Build PHP (`--enable-embed`) + phpy + Composer | false             |
 | `PHPY_PHP_VERSION`           | PHP version to build when `PHPY_ENABLED=true` | 8.5.3    |
 
@@ -313,7 +334,7 @@ If you're having issues with SSL certificates in development:
 If you encounter permission issues:
 
 ```bash
-docker exec -it derafu-sites-server-python-caddy chown -R admin:www-data /var/www/sites
+docker-compose exec webserver chown -R admin:www-data /var/www/sites
 ```
 
 ### Logs Location
@@ -321,7 +342,7 @@ docker exec -it derafu-sites-server-python-caddy chown -R admin:www-data /var/ww
 Logs are available in the container and can be accessed with:
 
 ```bash
-docker exec -it derafu-sites-server-python-caddy cat /var/log/caddy/access.log
+docker-compose exec webserver cat /var/log/caddy/access.log
 ```
 
 ## Advanced Usage
@@ -329,6 +350,43 @@ docker exec -it derafu-sites-server-python-caddy cat /var/log/caddy/access.log
 ### Custom Caddy Configuration
 
 For advanced configurations, modify the Caddyfile at `config/caddy/Caddyfile`.
+
+### Routing one path to a dedicated process (`CADDY_ROUTE_PATH`)
+
+A site's `Procfile` normally has one `web:` process handling every
+request. Sometimes a specific URL path needs its own, differently
+configured process instead — for example, an endpoint that must run
+single-threaded (`--worker-class sync`) while the rest of the site keeps
+`gthread`, to isolate it without affecting anything else the site serves.
+
+Add a `CADDY_ROUTE_PATH=<path>` environment variable inline on that
+process's own `Procfile` line (this is plain shell syntax — any process
+manager that reads a `Procfile` understands it, nothing custom):
+
+```
+web: gunicorn --bind :8000 --workers 4 --threads 4 --worker-class gthread yourproject.wsgi:application
+heavy: CADDY_ROUTE_PATH=/api/v2/heavy/* gunicorn --bind :8000 --workers 2 --worker-class sync --timeout 300 yourproject.wsgi:application
+```
+
+- The process name (`heavy` above) can be anything except `web`.
+- Write `--bind :8000` like any other process — it gets rewritten to that
+  process's own private socket automatically, the same way `web:` already
+  works. Never hardcode a socket path yourself.
+- `<path>` is a Caddy path pattern (glob), e.g. `/api/v2/heavy/*`.
+
+Apply it by (re-)running the site's setup script:
+
+```bash
+docker-compose exec webserver /scripts/start_procfile_supervisord.sh yoursite.com
+```
+
+This generates the matching Caddy rule under `config/caddy/routes.d/`,
+validates the *entire* Caddy configuration, and reloads Caddy only if it's
+valid — a broken or ambiguous route (e.g. two processes on the same site
+declaring the same path) is rejected, logged, and the previous, working
+routing is kept untouched, for that site and every other one sharing the
+container. Everything else on the site keeps going to its normal `web:`
+process, unaffected.
 
 ---
 
