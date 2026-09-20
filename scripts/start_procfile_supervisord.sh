@@ -25,12 +25,27 @@ BASE_SITES_DIR=${BASE_SITES_DIR:-/var/www/sites}
 APP_USER=${APP_USER:-admin}
 LOG_DIR="/var/log"
 
+# Per-site Caddy path routes generated from CADDY_ROUTE_PATH (see
+# configure_site()), imported by config/caddy/Caddyfile via a glob. Set to 1
+# by configure_site() whenever a site's routes actually change, so Caddy is
+# only validated/reloaded once, at the end, and only if something changed.
+CADDY_ROUTES_DIR=${CADDY_ROUTES_DIR:-/etc/caddy/routes.d}
+CADDY_NEEDS_RELOAD=0
+
 # Validate that supervisord directories exist.
 if [ ! -d "$SUPERVISORD_DIR" ]; then
     log_info "Creating supervisord configuration directory: $SUPERVISORD_DIR"
     mkdir -p $SUPERVISORD_DIR
 else
     log_info "✓ Supervisord configuration directory exists: $SUPERVISORD_DIR"
+fi
+
+# Validate that the Caddy routes directory exists.
+if [ ! -d "$CADDY_ROUTES_DIR" ]; then
+    log_info "Creating Caddy routes directory: $CADDY_ROUTES_DIR"
+    sudo mkdir -p "$CADDY_ROUTES_DIR"
+else
+    log_info "✓ Caddy routes directory exists: $CADDY_ROUTES_DIR"
 fi
 
 if [ ! -d "/var/log/supervisor" ]; then
@@ -142,6 +157,18 @@ configure_site() {
 
 EOF
 
+    # Per-site Caddy path routes (see CADDY_ROUTE_PATH handling below).
+    # caddy_routes_content accumulates one @matcher/handle block per route
+    # declared in this site's Procfile; seen_route_paths catches two
+    # processes of the same site declaring the same path (ambiguous: which
+    # one should Caddy send it to?); site_has_route_error, once set, means
+    # this site's Caddy routes are NOT written at the end — the previous
+    # (working) file, if any, is left untouched rather than replaced with
+    # something ambiguous.
+    local caddy_routes_content=""
+    local -A seen_route_paths=()
+    local site_has_route_error=0
+
     # Read and process each line from Procfile.
     while IFS= read -r line; do
         # Skip empty lines and comments.
@@ -156,6 +183,48 @@ EOF
         command=$(printf '%s' "$line" | cut -d: -f2-)
         # Left-trim spaces from command only (do not strip quotes).
         command="${command#${command%%[![:space:]]*}}"
+
+        # CADDY_ROUTE_PATH=<path>, set inline like any other env var on a
+        # Procfile command line, opts this process into its own gunicorn
+        # socket and a Caddy rule routing that path (for this site only) to
+        # it instead of the site's main "web" socket. Supervisord does not
+        # go through a shell, so this token is extracted here and stripped
+        # from the command — left in place, supervisord would try to exec
+        # "CADDY_ROUTE_PATH=..." itself as the program.
+        local route_path=""
+        if [[ "$command" =~ CADDY_ROUTE_PATH=([^[:space:]]+) ]]; then
+            route_path="${BASH_REMATCH[1]}"
+            command=$(printf '%s' "$command" | sed -E 's/CADDY_ROUTE_PATH=[^[:space:]]+[[:space:]]*//')
+
+            if [[ "$process_name" == "web" ]]; then
+                log_error "CADDY_ROUTE_PATH no debe usarse en el proceso 'web' de $site_name (le quitaría su socket principal); use un nombre de proceso propio. Se ignora esta ruta."
+                route_path=""
+                site_has_route_error=1
+            elif [[ -n "${seen_route_paths[$route_path]:-}" ]]; then
+                log_error "CADDY_ROUTE_PATH duplicado ('$route_path') en $site_name, entre los procesos '${seen_route_paths[$route_path]}' y '$process_name': es ambiguo a cuál debe ir. No se actualiza el ruteo de Caddy de $site_name esta vez."
+                site_has_route_error=1
+            else
+                seen_route_paths["$route_path"]="$process_name"
+
+                local safe_process_name
+                safe_process_name=$(printf '%s' "$process_name" | tr -c 'A-Za-z0-9_-' '_')
+                local route_socket_path="/run/gunicorn/${site_name}--${safe_process_name}.sock"
+
+                # Same substitution the "web" branch below does for its own
+                # socket — reused here so a CADDY_ROUTE_PATH line is written
+                # in the Procfile exactly like a normal "web"-style gunicorn
+                # command (--bind :8000), never hardcoding a socket path.
+                command=$(printf '%s' "$command" | sed "s|--bind :8000|--bind unix:$route_socket_path|")
+
+                caddy_routes_content+=$'\n'"@${site_name}_${safe_process_name}_route expression \`{real_domain} == \"${site_name}\" && path(\"${route_path}\")\`"
+                caddy_routes_content+=$'\n'"handle @${site_name}_${safe_process_name}_route {"
+                caddy_routes_content+=$'\n'"	reverse_proxy unix/${route_socket_path} {"
+                caddy_routes_content+=$'\n'"		header_up X-Forwarded-Host {domain_input}"
+                caddy_routes_content+=$'\n'"	}"
+                caddy_routes_content+=$'\n'"}"
+                caddy_routes_content+=$'\n'
+            fi
+        fi
 
         log_info "Processing: $process_name -> $command"
 
@@ -289,6 +358,34 @@ EOF
         log_error "Error moving configuration to $final_config_file"
         return 1
     fi
+
+    # Write (or remove) this site's Caddy routes file. Regenerated in full
+    # from the current Procfile every time, so a CADDY_ROUTE_PATH line
+    # removed from it makes its route disappear here too — no leftover
+    # rules for routes that no longer exist.
+    local caddy_route_file="$CADDY_ROUTES_DIR/$site_name.conf"
+    if [ "$site_has_route_error" = "1" ]; then
+        log_error "$site_name tiene CADDY_ROUTE_PATH ambiguos (ver arriba): se deja el ruteo de Caddy de $site_name como estaba, sin aplicar los cambios de esta corrida."
+    elif [ -n "$caddy_routes_content" ]; then
+        local caddy_tmp="/tmp/caddy-routes-$site_name.conf"
+        {
+            echo "# Caddy routes for site: $site_name"
+            echo "# Auto-generated from its Procfile (CADDY_ROUTE_PATH) — do not edit by hand."
+            echo "# Date: $(date)"
+            echo "$caddy_routes_content"
+        } > "$caddy_tmp"
+
+        if sudo mv "$caddy_tmp" "$caddy_route_file"; then
+            log_info "✓ Rutas de Caddy actualizadas para $site_name: $caddy_route_file"
+            CADDY_NEEDS_RELOAD=1
+        else
+            log_error "No se pudo mover el archivo de rutas de Caddy para $site_name"
+        fi
+    elif [ -f "$caddy_route_file" ]; then
+        sudo rm -f "$caddy_route_file"
+        log_info "Sin CADDY_ROUTE_PATH en $site_name: se eliminaron sus rutas de Caddy previas ($caddy_route_file)."
+        CADDY_NEEDS_RELOAD=1
+    fi
 }
 
 # Check parameters and process sites.
@@ -338,6 +435,30 @@ if command -v supervisorctl >/dev/null 2>&1 && pgrep supervisord >/dev/null; the
 else
     log_info "To apply configuration when supervisord is running:"
     log_info "sudo supervisorctl reread && sudo supervisorctl update"
+fi
+
+# If any site's CADDY_ROUTE_PATH routes changed, validate the whole Caddy
+# config before reloading it — a broken/ambiguous site must not be able to
+# take Caddy down for every other site sharing this container. On failure,
+# the currently running Caddy process is left untouched (it keeps serving
+# its last successfully loaded config; only a future restart of Caddy
+# itself, not of this script, would pick up the bad on-disk file).
+if [ "$CADDY_NEEDS_RELOAD" = "1" ]; then
+    if command -v caddy >/dev/null 2>&1 && pgrep caddy >/dev/null; then
+        log_info "Validando configuración de Caddy (rutas por sitio cambiaron)..."
+        if sudo -E caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+            log_info "✓ Configuración de Caddy válida, recargando..."
+            if sudo -E caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; then
+                log_info "✓ Caddy recargado correctamente"
+            else
+                log_error "No se pudo recargar Caddy (la configuración anterior sigue activa)"
+            fi
+        else
+            log_error "La configuración de Caddy generada NO es válida: no se recarga, sigue activa la anterior. Revise los archivos en $CADDY_ROUTES_DIR/"
+        fi
+    else
+        log_info "Caddy no está corriendo; las rutas se aplicarán la próxima vez que arranque."
+    fi
 fi
 
 log_info "=== Process completed ==="

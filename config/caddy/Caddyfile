@@ -120,6 +120,19 @@
 	}
 
 	# ==============================
+	# PER-SITE PATH ROUTES (generated)
+	# ==============================
+	#
+	# Optional, additive: a site opts in by setting CADDY_ROUTE_PATH=<path>
+	# on a Procfile process line (see scripts/start_procfile_supervisord.sh).
+	# That script generates one file per site here, matching on {real_domain}
+	# (computed above, identical for .local and production hosts) and on the
+	# declared path, routing it to that process's own gunicorn socket instead
+	# of the site's main one. A site that never sets CADDY_ROUTE_PATH has no
+	# file here (empty glob = no-op) and this import changes nothing for it.
+	import /etc/caddy/routes.d/*.conf
+
+	# ==============================
 	# LOCAL (.local)
 	# ==============================
 	handle @local_domain {
