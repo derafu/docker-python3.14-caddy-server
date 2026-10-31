@@ -20,7 +20,9 @@ services:
         WWW_USER: ${WWW_USER:-admin}  # User for web server operations.
         WWW_GROUP: ${WWW_GROUP:-www-data}  # Group for web server operations.
         PHPY_ENABLED: ${PHPY_ENABLED:-false}  # Build PHP (--enable-embed) + phpy so Python can host PHP.
-        PHPY_PHP_VERSION: ${PHPY_PHP_VERSION:-8.5.3}  # PHP version to build when PHPY_ENABLED=true.
+        PHPY_PHP_VERSION: ${PHPY_PHP_VERSION:-8.5.12}  # PHP version to build when PHPY_ENABLED=true.
+        PHPY_PHP_SHA256: ${PHPY_PHP_SHA256:-81a0f450349e84b08eb43faa85f8a4c835684f3cc1c50471775d1317a046c525}  # SHA-256 of that PHP release tarball.
+        PHPY_REF: ${PHPY_REF:-6629eec8b95e99843498c59bc1d9294315847f48}  # phpy commit to build.
 
     # Name of the container.
     container_name: ${SERVER_NAME:-derafu-sites-server-python-caddy}
@@ -39,11 +41,6 @@ services:
       SITES_DIR: ${SITES_DIR:-/home/admin/sites}  # Directory for site configurations.
       EDITOR: ${EDITOR:-vim}  # Default text editor.
       VISUAL: ${VISUAL:-vim}  # Default visual editor.
-      # Secret for GitHub webhooks. No effect yet in this repo: the Caddyfile
-      # proxies /api/webhook to unix//run/webhook/admin.sock, but nothing
-      # here creates that socket or reads this secret — the receiver is
-      # external tooling (not part of this image).
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
 
     # Restart policy for the container.
     restart: unless-stopped

@@ -119,7 +119,8 @@ when you actually need it:
 ```bash
 # In your .env file:
 PHPY_ENABLED=true
-PHPY_PHP_VERSION=8.5.3   # optional, defaults to 8.5.3
+PHPY_PHP_VERSION=8.5.12   # optional, defaults to 8.5.12
+# If you change the PHP version, also set PHPY_PHP_SHA256 (php.net/releases).
 
 docker compose build
 docker compose up -d
@@ -303,10 +304,11 @@ Customize behavior through environment variables:
 | `HTTPS_PORT`                 | HTTPS port in host                | 8443                |
 | `SSH_PORT`                   | SSH port in host                  | 2222                |
 | `MANAGER_PORT`               | Port for the on-demand TLS endpoint (`/api/ask`) | 9090 |
-| `GITHUB_WEBHOOK_SECRET`      | **No effect yet.** Reserved for a `/api/webhook` receiver; no such service exists in this repo (external tooling) | (empty) |
 | `DEPLOYER_HOST`              | **No effect yet.** Not passed into the container by `docker-compose.yml`; expects `derafu/python-fabric-deployer` (external tooling) | (empty) |
 | `PHPY_ENABLED`               | Build PHP (`--enable-embed`) + phpy + Composer | false             |
-| `PHPY_PHP_VERSION`           | PHP version to build when `PHPY_ENABLED=true` | 8.5.3    |
+| `PHPY_PHP_VERSION`           | PHP version to build when `PHPY_ENABLED=true` | 8.5.12    |
+| `PHPY_PHP_SHA256`            | SHA-256 of that PHP release tarball (checked at build); must match `PHPY_PHP_VERSION` | (that of 8.5.12) |
+| `PHPY_REF`                   | phpy commit to build | `6629eec` |
 
 ## Domain Logic
 

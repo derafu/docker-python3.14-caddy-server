@@ -16,7 +16,7 @@
 	{$CADDY_DEBUG}
 
 	# Email for SSL certificates.
-	email {$CADDY_EMAIL}
+	email {$CADDY_EMAIL:admin@example.com}
 
 	# Allow on-demand TLS certificates.
 	on_demand_tls {
@@ -93,13 +93,13 @@
 
 	log {
 		output file /var/log/caddy/access.log {
-			roll_size {$CADDY_LOG_SIZE}
-			roll_keep {$CADDY_LOG_KEEP}
+			roll_size {$CADDY_LOG_SIZE:100mb}
+			roll_keep {$CADDY_LOG_KEEP:5}
 		}
 	}
 
 	tls {
-		issuer {$CADDY_HTTPS_ISSUER}
+		issuer {$CADDY_HTTPS_ISSUER:internal}
 		on_demand
 	}
 
@@ -110,12 +110,12 @@
 	# STATIC FILES AND MEDIA
 	# ==============================
 	handle_path /static/* {
-		root * {$WWW_ROOT_PATH}/{real_domain}/current/static
+		root * {$WWW_ROOT_PATH:/var/www/sites}/{real_domain}/current/static
 		file_server
 	}
 
 	handle_path /media/* {
-		root * {$WWW_ROOT_PATH}/{real_domain}/current/media
+		root * {$WWW_ROOT_PATH:/var/www/sites}/{real_domain}/current/media
 		file_server
 	}
 
@@ -155,24 +155,21 @@
 }
 
 # ==============================================================================
-# ENDPOINT FOR TLS CERTIFICATES AND WEBHOOKS
+# ENDPOINT FOR TLS CERTIFICATES
 # ==============================================================================
 #
-# On-demand TLS endpoint and Webhook Handler.
+# On-demand TLS endpoint.
 #
 # This endpoint is used to check if a domain is available for TLS.
 # It will return a 200 status if the domain is available, otherwise it will
 # return a 404 status.
-#
-# Also is used to handle webhooks sent to the server. The webhook is processed
-# by the admin webhook service, listening on a unix socket.
 #
 :9090 {
 	# Handle TLS ask.
 	# Normalize the domain to the real domain.
 	# Check if the real domain exists as a directory in the {$WWW_ROOT_PATH}.
 	# If the real domain exists, return a 200 status.
-	root * {$WWW_ROOT_PATH}
+	root * {$WWW_ROOT_PATH:/var/www/sites}
 	map {query.domain} {domain_input} {
 		default "{query.domain}"
 	}
@@ -180,22 +177,10 @@
 	@ask <<CEL
         path('/api/ask')
         && {real_domain} != ""
-        && (file({'try_files': [{real_domain} + '/']}) || {$CADDY_HTTPS_ALLOW_ANY_HOST})
+        && (file({'try_files': [{real_domain} + '/']}) || {$CADDY_HTTPS_ALLOW_ANY_HOST:false})
     CEL
 	handle @ask {
 		respond "Domain {real_domain} is available." 200
-	}
-
-	# Handle webhooks.
-	#
-	# No effect yet: nothing in this image creates
-	# unix//run/webhook/admin.sock (no supervisord program, no script) or
-	# reads GITHUB_WEBHOOK_SECRET — the receiver is external tooling, not
-	# part of this repo. Requests to /api/webhook currently just fail to
-	# connect to a socket that doesn't exist.
-	@webhook path /api/webhook
-	handle @webhook {
-		reverse_proxy unix//run/webhook/admin.sock
 	}
 
 	# Default response.

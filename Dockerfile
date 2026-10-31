@@ -14,7 +14,12 @@ ARG WWW_GROUP=www-data
 #   PHPY_ENABLED=true docker compose build
 # (wired through docker-compose.yml -> this ARG).
 ARG PHPY_ENABLED=false
-ARG PHPY_PHP_VERSION=8.5.3
+ARG PHPY_PHP_VERSION=8.5.12
+# SHA-256 of php-${PHPY_PHP_VERSION}.tar.gz, as published at php.net/releases.
+# Must be updated together with PHPY_PHP_VERSION.
+ARG PHPY_PHP_SHA256=81a0f450349e84b08eb43faa85f8a4c835684f3cc1c50471775d1317a046c525
+# phpy commit to build (swoole/phpy has no tag with the pip packaging yet).
+ARG PHPY_REF=6629eec8b95e99843498c59bc1d9294315847f48
 
 # Expose ports.
 EXPOSE 22 80 443 9090 8000
@@ -25,7 +30,6 @@ RUN \
     # Install basic dependencies.
     apt-get update && apt-get install -y --no-install-recommends \
     apt-transport-https \
-    at \
     ca-certificates \
     build-essential \
     cargo \
@@ -85,11 +89,15 @@ RUN \
     zlib1g-dev \
     # Install wkhtmltopdf.
     && ARCH=$(dpkg --print-architecture) \
+    # The release publishes no checksums; these are the SHA-256 of the 0.12.6.1-3 packages.
     && if [ "$ARCH" = "arm64" ]; then \
+        WKHTMLTOX_SHA256=b6606157b27c13e044d0abbe670301f88de4e1782afca4f9c06a5817f3e03a9c; \
         wget https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_arm64.deb -O wkhtmltox.deb; \
     else \
+        WKHTMLTOX_SHA256=98ba0d157b50d36f23bd0dedf4c0aa28c7b0c50fcdcdc54aa5b6bbba81a3941d; \
         wget https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_amd64.deb -O wkhtmltox.deb; \
     fi \
+    && echo "${WKHTMLTOX_SHA256}  wkhtmltox.deb" | sha256sum -c - \
     && apt-get install -y ./wkhtmltox.deb \
     && rm wkhtmltox.deb \
     \
@@ -150,7 +158,6 @@ RUN \
     && usermod -p '*' ${WWW_USER} \
     && echo "${WWW_USER} ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers \
     && chmod 0440 /etc/sudoers \
-    && chmod g+w /etc/passwd \
     && mkdir -p /home/${WWW_USER}/.ssh \
     && chmod 700 /home/${WWW_USER}/.ssh \
     && ssh-keyscan -t rsa github.com >> /home/${WWW_USER}/.ssh/known_hosts \
@@ -162,10 +169,6 @@ RUN \
     && chown -R ${WWW_USER}:${WWW_GROUP} ${WWW_ROOT_PATH} \
     && chmod 770 ${WWW_ROOT_PATH} -R \
     && ln -s ${WWW_ROOT_PATH} /home/${WWW_USER}/sites \
-    \
-    # Allow www-data and ${WWW_USER} users to add jobs to the at queue.
-    && echo "www-data" >> /etc/at.allow \
-    && echo "${WWW_USER}" >> /etc/at.allow \
     \
     # Add SSH known hosts.
     && mkdir -p /etc/ssh \
@@ -187,6 +190,7 @@ RUN if [ "$PHPY_ENABLED" = "true" ]; then \
             libonig-dev \
         && rm -rf /var/lib/apt/lists/* \
         && curl -fsSL "https://www.php.net/distributions/php-${PHPY_PHP_VERSION}.tar.gz" -o /tmp/php.tar.gz \
+        && echo "${PHPY_PHP_SHA256}  /tmp/php.tar.gz" | sha256sum -c - \
         && mkdir -p /usr/src/php \
         && tar -xzf /tmp/php.tar.gz -C /usr/src/php --strip-components=1 \
         && rm /tmp/php.tar.gz \
@@ -212,10 +216,13 @@ RUN if [ "$PHPY_ENABLED" = "true" ]; then \
         && cd / && rm -rf /usr/src/php \
         && git clone https://github.com/swoole/phpy.git /opt/phpy \
         && cd /opt/phpy \
+        && git checkout --detach "${PHPY_REF}" \
         && PHP_CONFIG=/opt/php/bin/php-config pip install --break-system-packages . \
         && cd / && rm -rf /opt/phpy \
-        && curl -sS https://getcomposer.org/installer \
-            | /opt/php/bin/php -- --install-dir=/opt/php/bin --filename=composer \
+        && curl -fsSL https://getcomposer.org/installer -o /tmp/composer-setup.php \
+        && [ "$(curl -fsSL https://composer.github.io/installer.sig)" = "$(/opt/php/bin/php -r 'echo hash_file("sha384", "/tmp/composer-setup.php");')" ] \
+        && /opt/php/bin/php /tmp/composer-setup.php --install-dir=/opt/php/bin --filename=composer \
+        && rm /tmp/composer-setup.php \
     ; else \
         echo "PHPY_ENABLED=false: skipping PHP/phpy build."; \
     fi
@@ -227,13 +234,6 @@ ENV PATH="/opt/php/bin:${PATH}"
 # Configure SSH client (this will include the config form the server, but is not used for SSH access).
 COPY config/ssh/ /home/${WWW_USER}/.ssh/
 RUN chown -R ${WWW_USER}:${WWW_USER} /home/${WWW_USER}/.ssh \
-    # Add SSH key for www-data user.
-    && mkdir -p /var/www/.ssh \
-    && ssh-keygen -t rsa -b 4096 -N "" -C "www-data@localhost" -f /var/www/.ssh/id_rsa -q \
-    && cat /var/www/.ssh/id_rsa.pub >> /home/${WWW_USER}/.ssh/authorized_keys \
-    && chown -R www-data:www-data /var/www/.ssh \
-    && chmod 700 /var/www/.ssh \
-    && chmod 600 /var/www/.ssh/id_rsa \
     # Set correct permissions for authorized_keys and id_rsa.
     && chmod 600 /home/${WWW_USER}/.ssh/authorized_keys || true \
     && [ -f /home/${WWW_USER}/.ssh/id_rsa ] && chmod 600 /home/${WWW_USER}/.ssh/id_rsa || true
