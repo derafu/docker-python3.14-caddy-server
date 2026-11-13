@@ -3,10 +3,25 @@ name: Test Image
 on:
   # Required by publish-image.yml before publishing anything.
   workflow_call:
+  # Every push to a branch other than main (main runs it from
+  # publish-image.yml before publishing).
+  push:
+    branches-ignore:
+      - main
+    paths:
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'entrypoint.sh'
+      - 'config/**'
+      - 'scripts/**'
+      - '.github/ci/**'
+      - '.github/workflows/test-image.yml'
+      - '.github/workflows/publish-image.yml'
   # Pull requests only run the test: this workflow never logs in to a
   # registry nor pushes images, and `pull_request` (not
   # `pull_request_target`) gives PRs from forks no secrets and a read-only
-  # token.
+  # token. PRs from branches of this repository are skipped (see `if`
+  # below): the push to that branch already tested the same commit.
   pull_request:
     paths:
       - 'Dockerfile'
@@ -22,6 +37,9 @@ on:
 jobs:
   test:
     name: Build and verify (${{ matrix.tag }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

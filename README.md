@@ -184,7 +184,7 @@ CI
 │   ├── ci/
 │   │   ├── test-image.sh       # End-to-end test of a built image (also runnable locally)
 │   │   └── django-site/        # Minimal Django site served by that test
-│   └── workflows/              # Test on pull requests; test before publishing images
+│   └── workflows/              # Test on pushes and pull requests; test before publishing images
 ```
 
 ## Development vs Production Environment
@@ -428,8 +428,9 @@ process, unaffected.
 
 Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
 
-Pull requests run the image test (`.github/workflows/test-image.yml`), and
-images are only published if it passes. Run it locally against a built image
+Pushes to any branch and pull requests run the image test
+(`.github/workflows/test-image.yml`). On `main` it runs before publishing,
+and images are only published if it passes. Run it locally against a built image
 with:
 
 ```bash
