@@ -7,15 +7,27 @@ on:
       - main
     paths:
       - 'Dockerfile'
+      - 'entrypoint.sh'
       - 'config/**'
+      - 'scripts/**'
+      - '.github/ci/**'
       - '.github/workflows/publish-image.yml'
+      - '.github/workflows/test-image.yml'
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
+  # Nothing is published unless both images pass the end-to-end test.
+  test:
+    name: Test
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test-image.yml
+
   build:
     name: Build and publish (${{ matrix.tag }})
+    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

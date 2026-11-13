@@ -13,8 +13,6 @@
     notifempty
     # Only run post-rotation scripts once.
     sharedscripts
-    # Add su directive to avoid permission issues.
-    su admin admin
     postrotate
         systemctl reload caddy > /dev/null 2>&1 || true
     endscript

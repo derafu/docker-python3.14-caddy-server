@@ -50,6 +50,10 @@ A modern Docker setup for hosting Python websites with Caddy web server and SSH 
    ```bash
    cat ~/.ssh/id_rsa.pub > config/ssh/authorized_keys
    ```
+   No SSH keys are baked into the image: `docker-compose.override.yml` mounts
+   `config/ssh/` (or `VOLUME_SSH`) at `/home/admin/.ssh`, and the entrypoint
+   fixes its ownership and permissions on every start. If you change the keys
+   while the container is running, restart it.
 
 4. Build and start the container:
    ```bash
@@ -142,6 +146,7 @@ exactly like a normal Python + Caddy image.
 ```
 docker-python3.14-caddy-server/
 ├── Dockerfile                  # Python + Caddy server base image definition (+ optional PHP/phpy)
+├── entrypoint.sh               # Runs on every start: shell env file, ~/.ssh and sites dir permissions
 ├── docker-compose.yml          # Production Docker services and volumes
 ├── docker-compose.override-example.yml  # Template: copy to docker-compose.override.yml
 ├── .env-dist                   # Template: copy to .env
@@ -161,7 +166,7 @@ Configuration
 │   │   ├── caddy               # Logrotate rules for Caddy
 │   │   └── gunicorn             # Logrotate rules for Gunicorn
 │   ├── ssh/
-│   │   ├── authorized_keys     # Public keys for SSH login (e.g., deploy access)
+│   │   ├── authorized_keys     # Public keys for SSH login (mounted at runtime, gitignored)
 │   │   └── sshd_config         # SSH server settings (OpenSSH)
 │   └── supervisor/
 │       └── supervisord.conf    # Supervisor config to manage processes (Caddy, Gunicorn, etc.)
@@ -174,6 +179,12 @@ Helper Scripts
 Documentation
 ├── docs/
 │   └── docker.md                # Notes and recommendations for Docker usage
+CI
+├── .github/
+│   ├── ci/
+│   │   ├── test-image.sh       # End-to-end test of a built image (also runnable locally)
+│   │   └── django-site/        # Minimal Django site served by that test
+│   └── workflows/              # Test on pull requests; test before publishing images
 ```
 
 ## Development vs Production Environment
@@ -304,6 +315,8 @@ Customize behavior through environment variables:
 | `HTTPS_PORT`                 | HTTPS port in host                | 8443                |
 | `SSH_PORT`                   | SSH port in host                  | 2222                |
 | `MANAGER_PORT`               | Port for the on-demand TLS endpoint (`/api/ask`) | 9090 |
+| `VOLUME_SSH`                 | Host directory mounted at `/home/admin/.ssh` (override) | ./config/ssh |
+| `NETWORK_TOOLS_ENABLE`       | Install `nmap` and `socat` at build time (`1`) | 0 |
 | `DEPLOYER_HOST`              | **No effect yet.** Not passed into the container by `docker-compose.yml`; expects `derafu/python-fabric-deployer` (external tooling) | (empty) |
 | `PHPY_ENABLED`               | Build PHP (`--enable-embed`) + phpy + Composer | false             |
 | `PHPY_PHP_VERSION`           | PHP version to build when `PHPY_ENABLED=true` | 8.5.12    |
@@ -346,6 +359,25 @@ Logs are available in the container and can be accessed with:
 ```bash
 docker-compose exec webserver cat /var/log/caddy/access.log
 ```
+
+## Security Notes
+
+- `admin` has no general `sudo`: the only command it can run as root is
+  `/scripts/start_procfile_supervisord.sh` (it re-runs itself through sudo
+  when started as `admin`). Its password is `*`, so SSH public key login
+  works but `su`/`sudo` never accept a password. For root, use
+  `docker-compose exec -u 0 webserver bash` from the host.
+- Restart services from the host (see [Restarting Services](#restarting-services)):
+  `admin` cannot use `supervisorctl`.
+- The deployer runs without sudo, so `admin` (uid 1000) must own the host
+  directory mounted at `/var/www/sites`. On Linux, if Docker creates that
+  directory (owned by root), the entrypoint hands it to `admin` on start; any
+  other owner is left as is.
+- `nmap` and `socat` are not installed unless built with
+  `NETWORK_TOOLS_ENABLE=1`.
+- Caddy runs as root and follows symlinks under each site's `static/` and
+  `media/`, so whoever controls a site's files can publish any file readable
+  by root. Keep that in mind when giving access to `admin`.
 
 ## Advanced Usage
 
@@ -395,6 +427,14 @@ process, unaffected.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+
+Pull requests run the image test (`.github/workflows/test-image.yml`), and
+images are only published if it passes. Run it locally against a built image
+with:
+
+```bash
+.github/ci/test-image.sh <image> [true]   # "true" also tests PHP embed + phpy
+```
 
 ## License
 

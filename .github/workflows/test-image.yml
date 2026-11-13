@@ -1,0 +1,62 @@
+name: Test Image
+
+on:
+  # Required by publish-image.yml before publishing anything.
+  workflow_call:
+  # Pull requests only run the test: this workflow never logs in to a
+  # registry nor pushes images, and `pull_request` (not
+  # `pull_request_target`) gives PRs from forks no secrets and a read-only
+  # token.
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'entrypoint.sh'
+      - 'config/**'
+      - 'scripts/**'
+      - '.github/ci/**'
+      - '.github/workflows/test-image.yml'
+      - '.github/workflows/publish-image.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build and verify (${{ matrix.tag }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tag: latest
+            phpy_enabled: 'false'
+          - tag: phpy
+            phpy_enabled: 'true'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Same platform, build args and cache scope as publish-image.yml, so
+      # the publish job reuses these layers instead of building again.
+      - name: Build image (single-platform, loaded locally)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            PHPY_ENABLED=${{ matrix.phpy_enabled }}
+          load: true
+          tags: docker-python3.14-caddy-server:ci-test-${{ matrix.tag }}
+          cache-from: type=gha,scope=${{ matrix.tag }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.tag }}
+
+      # Runs the container, checks the hardening and serves a minimal Django
+      # site end to end (see the script for the full list of checks).
+      - name: Verify the container end to end
+        run: .github/ci/test-image.sh docker-python3.14-caddy-server:ci-test-${{ matrix.tag }} ${{ matrix.phpy_enabled }}

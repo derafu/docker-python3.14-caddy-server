@@ -2,9 +2,26 @@
 
 # Unified script to generate supervisord configuration from Procfile.
 # Reads Procfile and generates a single supervisord configuration.
-# Usage: ./start_procfile_supervisord.sh [site_name_optional]
+# Usage: /scripts/start_procfile_supervisord.sh [site_name_optional]
+#
+# Runs as root: it writes to /etc/supervisor/conf.d and /etc/caddy/routes.d,
+# and runs supervisorctl and caddy reload. When started by another user
+# (e.g. admin, from the deployer) it re-executes itself through sudo, which
+# is allowed only for this exact path (see /etc/sudoers.d). Since anyone
+# allowed to run it controls its arguments and the files under the sites
+# directory, everything taken from them is validated before use: site names,
+# Procfile process names and CADDY_ROUTE_PATH values, and the site's files
+# (Procfile, wsgi.py) are read as APP_USER, never as root.
 
 set -e
+
+# Absolute path of this script, as allowed in sudoers.
+readonly SCRIPT_PATH="/scripts/start_procfile_supervisord.sh"
+
+# Re-execute as root through sudo. -n: fail instead of asking for a password.
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo -n "$SCRIPT_PATH" "$@"
+fi
 
 # Function for logging messages.
 log_info() {
@@ -19,23 +36,66 @@ log_warning() {
     echo "$(date +'%Y-%m-%d %H:%M:%S') [WARNING] - $1" >&2
 }
 
-# Configuration variables.
-SUPERVISORD_DIR=${SUPERVISORD_DIR:-/etc/supervisor/conf.d}
-BASE_SITES_DIR=${BASE_SITES_DIR:-/var/www/sites}
-APP_USER=${APP_USER:-admin}
-LOG_DIR="/var/log"
+# Configuration. Fixed on purpose (not read from the environment): this
+# script runs as root, so its caller must not be able to change where it
+# writes or which user the applications run as.
+readonly SUPERVISORD_DIR="/etc/supervisor/conf.d"
+readonly BASE_SITES_DIR="/var/www/sites"
+readonly APP_USER="admin"
+readonly LOG_DIR="/var/log"
 
 # Per-site Caddy path routes generated from CADDY_ROUTE_PATH (see
 # configure_site()), imported by config/caddy/Caddyfile via a glob. Set to 1
 # by configure_site() whenever a site's routes actually change, so Caddy is
 # only validated/reloaded once, at the end, and only if something changed.
-CADDY_ROUTES_DIR=${CADDY_ROUTES_DIR:-/etc/caddy/routes.d}
+readonly CADDY_ROUTES_DIR="/etc/caddy/routes.d"
 CADDY_NEEDS_RELOAD=0
+
+# Validation of values that end up in file names and in the generated
+# supervisord/Caddy configuration. Anything else is rejected: a newline or a
+# "]" in a site name, for instance, could inject a whole [program:...]
+# section that supervisord would run as root.
+is_valid_site_name() {
+    # Domain-like: letters, digits, dots and dashes; no leading dot/dash.
+    [[ ${#1} -le 253 && "$1" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]
+}
+
+is_valid_process_name() {
+    [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]
+}
+
+is_valid_route_path() {
+    [[ "$1" =~ ^/[A-Za-z0-9._~/*-]*$ ]]
+}
+
+# Run a command as APP_USER. Used to read the site's own files, so a
+# symlink planted there can't make root read files the site owner can't.
+as_app_user() {
+    runuser -u "$APP_USER" -- "$@"
+}
+
+# Export, from the container's main process (PID 1), the variables the
+# Caddyfile uses ({$VAR}). sudo clears the environment, and `caddy reload`
+# adapts the Caddyfile with the caller's environment: without this, Caddy
+# would be reloaded with the Caddyfile defaults instead of the container's
+# values (e.g. CADDY_HTTPS_ISSUER). Only these names are taken.
+load_caddy_env() {
+    local entry name
+    while IFS= read -r -d '' entry; do
+        name=${entry%%=*}
+        case "$name" in
+            CADDY_DEBUG|CADDY_EMAIL|CADDY_HTTPS_ALLOW_ANY_HOST|\
+            CADDY_HTTPS_ISSUER|CADDY_LOG_KEEP|CADDY_LOG_SIZE|WWW_ROOT_PATH)
+                export "$name=${entry#*=}"
+                ;;
+        esac
+    done < /proc/1/environ
+}
 
 # Validate that supervisord directories exist.
 if [ ! -d "$SUPERVISORD_DIR" ]; then
     log_info "Creating supervisord configuration directory: $SUPERVISORD_DIR"
-    mkdir -p $SUPERVISORD_DIR
+    mkdir -p "$SUPERVISORD_DIR"
 else
     log_info "✓ Supervisord configuration directory exists: $SUPERVISORD_DIR"
 fi
@@ -43,7 +103,7 @@ fi
 # Validate that the Caddy routes directory exists.
 if [ ! -d "$CADDY_ROUTES_DIR" ]; then
     log_info "Creating Caddy routes directory: $CADDY_ROUTES_DIR"
-    sudo mkdir -p "$CADDY_ROUTES_DIR"
+    mkdir -p "$CADDY_ROUTES_DIR"
 else
     log_info "✓ Caddy routes directory exists: $CADDY_ROUTES_DIR"
 fi
@@ -59,8 +119,9 @@ fi
 detect_django_project() {
     local current_path="$1"
 
-    # Search for wsgi.py in current directory.
-    local wsgi_path=$(find "$current_path/" -maxdepth 2 -name wsgi.py | head -n 1)
+    # Search for wsgi.py in current directory (as APP_USER, see above).
+    local wsgi_path
+    wsgi_path=$(as_app_user find "$current_path/" -maxdepth 2 -name wsgi.py | head -n 1)
 
     if [ -z "$wsgi_path" ]; then
         log_error "Could not find wsgi.py file in $current_path/"
@@ -71,7 +132,8 @@ detect_django_project() {
     local project_dir=$(dirname "$wsgi_path")
     local django_project=$(basename "$project_dir")
 
-    log_info "Found wsgi.py at $wsgi_path, project: $django_project"
+    # To stderr: stdout is the return value (the project name).
+    log_info "Found wsgi.py at $wsgi_path, project: $django_project" >&2
     echo "$django_project"
 }
 
@@ -79,6 +141,11 @@ detect_django_project() {
 configure_site() {
     local site_path="$1"
     local site_name=$(basename "$site_path")
+
+    if ! is_valid_site_name "$site_name"; then
+        log_error "Invalid site name '$site_name': only letters, digits, dots and dashes are allowed. Skipping."
+        return 1
+    fi
 
     log_info "Processing site: $site_name"
 
@@ -97,15 +164,17 @@ configure_site() {
         return 1
     fi
 
-    # Check if Procfile exists.
-    if [ ! -f "$procfile" ]; then
-        log_warning "No Procfile found for $site_name, skipping"
+    # Read the Procfile as APP_USER (see as_app_user).
+    local procfile_content
+    if ! as_app_user test -f "$procfile" \
+        || ! procfile_content=$(as_app_user cat -- "$procfile"); then
+        log_warning "No readable Procfile found for $site_name, skipping"
         return 1
     fi
 
     # Detect Django project.
-    local django_project=$(detect_django_project "$current_path")
-    if [ $? -ne 0 ]; then
+    local django_project
+    if ! django_project=$(detect_django_project "$current_path"); then
         return 1
     fi
 
@@ -145,9 +214,17 @@ configure_site() {
     log_info "Gunicorn binary: $gunicorn_bin"
     log_info "Celery binary: $celery_bin"
 
-    # Generate supervisord configuration (one file per site).
-    local config_file="/tmp/django-supervisord-$site_name.conf"
+    # Generate supervisord configuration (one file per site). The temporary
+    # file is created with mktemp in the destination directory itself
+    # (root-only, so nobody else can pre-create or replace it) and with a
+    # name that doesn't end in .conf (so supervisord never includes it half
+    # written); the final mv is then an atomic rename in the same directory.
     local final_config_file="$SUPERVISORD_DIR/django-supervisord-$site_name.conf"
+    local config_file
+    if ! config_file=$(mktemp "$SUPERVISORD_DIR/.django-supervisord-$site_name.conf.XXXXXX"); then
+        log_error "Could not create a temporary file in $SUPERVISORD_DIR"
+        return 1
+    fi
 
     # Initialize configuration file.
     cat > "$config_file" << EOF
@@ -179,10 +256,18 @@ EOF
         # Extract process name and command (preserve quotes).
         local process_name
         process_name=$(printf '%s' "$line" | cut -d: -f1)
+        # Trim surrounding spaces from the process name.
+        process_name="${process_name#${process_name%%[![:space:]]*}}"
+        process_name="${process_name%${process_name##*[![:space:]]}}"
         local command
         command=$(printf '%s' "$line" | cut -d: -f2-)
         # Left-trim spaces from command only (do not strip quotes).
         command="${command#${command%%[![:space:]]*}}"
+
+        if ! is_valid_process_name "$process_name"; then
+            log_error "Invalid process name '$process_name' in the Procfile of $site_name: only letters, digits, '_' and '-' are allowed. Skipping this process."
+            continue
+        fi
 
         # CADDY_ROUTE_PATH=<path>, set inline like any other env var on a
         # Procfile command line, opts this process into its own gunicorn
@@ -198,6 +283,10 @@ EOF
 
             if [[ "$process_name" == "web" ]]; then
                 log_error "CADDY_ROUTE_PATH no debe usarse en el proceso 'web' de $site_name (le quitaría su socket principal); use un nombre de proceso propio. Se ignora esta ruta."
+                route_path=""
+                site_has_route_error=1
+            elif ! is_valid_route_path "$route_path"; then
+                log_error "CADDY_ROUTE_PATH inválido ('$route_path') en $site_name: debe empezar con '/' y usar solo letras, dígitos y . _ ~ / * -. No se actualiza el ruteo de Caddy de $site_name esta vez."
                 route_path=""
                 site_has_route_error=1
             elif [[ -n "${seen_route_paths[$route_path]:-}" ]]; then
@@ -347,14 +436,17 @@ stopasgroup=true
 EOF
         fi
 
-    done < "$procfile"
+    done <<< "$procfile_content"
 
 
-    # Move temporary file to final directory with sudo.
+    # Move the temporary file into place: root-owned and read-only for
+    # everyone else, so nobody but root can change what supervisord runs.
     log_info "Moving configuration to $final_config_file..."
-    if sudo mv "$config_file" "$final_config_file"; then
+    if chown root:root "$config_file" && chmod 644 "$config_file" \
+        && mv -f "$config_file" "$final_config_file"; then
         log_info "✓ Configuration created: $final_config_file"
     else
+        rm -f "$config_file"
         log_error "Error moving configuration to $final_config_file"
         return 1
     fi
@@ -365,9 +457,15 @@ EOF
     # rules for routes that no longer exist.
     local caddy_route_file="$CADDY_ROUTES_DIR/$site_name.conf"
     if [ "$site_has_route_error" = "1" ]; then
-        log_error "$site_name tiene CADDY_ROUTE_PATH ambiguos (ver arriba): se deja el ruteo de Caddy de $site_name como estaba, sin aplicar los cambios de esta corrida."
+        log_error "$site_name tiene CADDY_ROUTE_PATH ambiguos o inválidos (ver arriba): se deja el ruteo de Caddy de $site_name como estaba, sin aplicar los cambios de esta corrida."
     elif [ -n "$caddy_routes_content" ]; then
-        local caddy_tmp="/tmp/caddy-routes-$site_name.conf"
+        # Same approach as the supervisord file: mktemp in the destination
+        # directory, with a name that the Caddyfile's *.conf import skips.
+        local caddy_tmp
+        if ! caddy_tmp=$(mktemp "$CADDY_ROUTES_DIR/.$site_name.conf.XXXXXX"); then
+            log_error "No se pudo crear un archivo temporal en $CADDY_ROUTES_DIR para $site_name"
+            return 1
+        fi
         {
             echo "# Caddy routes for site: $site_name"
             echo "# Auto-generated from its Procfile (CADDY_ROUTE_PATH) — do not edit by hand."
@@ -375,14 +473,16 @@ EOF
             echo "$caddy_routes_content"
         } > "$caddy_tmp"
 
-        if sudo mv "$caddy_tmp" "$caddy_route_file"; then
+        if chown root:root "$caddy_tmp" && chmod 644 "$caddy_tmp" \
+            && mv -f "$caddy_tmp" "$caddy_route_file"; then
             log_info "✓ Rutas de Caddy actualizadas para $site_name: $caddy_route_file"
             CADDY_NEEDS_RELOAD=1
         else
+            rm -f "$caddy_tmp"
             log_error "No se pudo mover el archivo de rutas de Caddy para $site_name"
         fi
     elif [ -f "$caddy_route_file" ]; then
-        sudo rm -f "$caddy_route_file"
+        rm -f "$caddy_route_file"
         log_info "Sin CADDY_ROUTE_PATH en $site_name: se eliminaron sus rutas de Caddy previas ($caddy_route_file)."
         CADDY_NEEDS_RELOAD=1
     fi
@@ -392,6 +492,14 @@ EOF
 if [ -n "$1" ]; then
     # Specific site specified.
     SITE_NAME=$1
+
+    # Validate before building any path from it (no "/" or "..": no path
+    # traversal outside BASE_SITES_DIR).
+    if ! is_valid_site_name "$SITE_NAME"; then
+        log_error "Invalid site name '$SITE_NAME': only letters, digits, dots and dashes are allowed."
+        exit 1
+    fi
+
     site_path="$BASE_SITES_DIR/$SITE_NAME"
 
     log_info "Site specified: $SITE_NAME"
@@ -412,8 +520,8 @@ else
         exit 1
     fi
 
-    # Iterate over each site.
-    for site_path in $BASE_SITES_DIR/*; do
+    # Iterate over each site (configure_site skips invalid names).
+    for site_path in "$BASE_SITES_DIR"/*; do
         if [ -d "$site_path" ]; then
             configure_site "$site_path" || true  # Continue even if one fails.
         fi
@@ -423,18 +531,16 @@ fi
 # If supervisord is running, apply changes.
 if command -v supervisorctl >/dev/null 2>&1 && pgrep supervisord >/dev/null; then
     log_info "Applying configuration to supervisord..."
-    if sudo supervisorctl reread && sudo supervisorctl update; then
+    if supervisorctl reread && supervisorctl update; then
         log_info "Changes applied successfully"
         log_info "Service status:"
-        sudo supervisorctl status | grep django-
+        supervisorctl status | grep django- || true
     else
         log_error "Error applying changes to supervisord"
-        log_info "Apply manually with:"
-        log_info "sudo supervisorctl reread && sudo supervisorctl update"
+        log_info "Apply them by running this script again: $SCRIPT_PATH"
     fi
 else
-    log_info "To apply configuration when supervisord is running:"
-    log_info "sudo supervisorctl reread && sudo supervisorctl update"
+    log_info "To apply configuration when supervisord is running, run this script again: $SCRIPT_PATH"
 fi
 
 # If any site's CADDY_ROUTE_PATH routes changed, validate the whole Caddy
@@ -445,10 +551,11 @@ fi
 # itself, not of this script, would pick up the bad on-disk file).
 if [ "$CADDY_NEEDS_RELOAD" = "1" ]; then
     if command -v caddy >/dev/null 2>&1 && pgrep caddy >/dev/null; then
+        load_caddy_env
         log_info "Validando configuración de Caddy (rutas por sitio cambiaron)..."
-        if sudo -E caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+        if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
             log_info "✓ Configuración de Caddy válida, recargando..."
-            if sudo -E caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; then
+            if caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; then
                 log_info "✓ Caddy recargado correctamente"
             else
                 log_error "No se pudo recargar Caddy (la configuración anterior sigue activa)"

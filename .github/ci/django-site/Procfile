@@ -1,0 +1,2 @@
+web: gunicorn ciapp.wsgi --bind :8000 --workers 1
+api: CADDY_ROUTE_PATH=/api/* gunicorn ciapp.wsgi --bind :8000 --workers 1

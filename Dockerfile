@@ -21,6 +21,10 @@ ARG PHPY_PHP_SHA256=81a0f450349e84b08eb43faa85f8a4c835684f3cc1c50471775d1317a046
 # phpy commit to build (swoole/phpy has no tag with the pip packaging yet).
 ARG PHPY_REF=6629eec8b95e99843498c59bc1d9294315847f48
 
+# Optional: install network/recon tools (nmap, socat). Off by default; enable
+# with NETWORK_TOOLS_ENABLE=1 (wired through docker-compose.yml -> this ARG).
+ARG NETWORK_TOOLS_ENABLE=0
+
 # Expose ports.
 EXPOSE 22 80 443 9090 8000
 
@@ -69,7 +73,6 @@ RUN \
     locales \
     meson \
     nano \
-    nmap \
     net-tools \
     ninja-build \
     openssh-client \
@@ -77,7 +80,6 @@ RUN \
     postgresql-client \
     rustc \
     shared-mime-info \
-    socat \
     screen \
     sudo \
     supervisor \
@@ -153,11 +155,12 @@ RUN \
     # Create SSH directory.
     && mkdir -p /var/run/sshd \
     \
-    # Create admin user for SSH access.
+    # Create admin user for SSH access. Its password hash is "*": SSH
+    # public-key login works, but su/sudo can never authenticate it. It has
+    # no general sudo: the only command it may run as root is the Procfile
+    # script (see /etc/sudoers.d/start-procfile-supervisord below).
     && useradd -m -d /home/${WWW_USER} -s /bin/bash ${WWW_USER} \
     && usermod -p '*' ${WWW_USER} \
-    && echo "${WWW_USER} ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers \
-    && chmod 0440 /etc/sudoers \
     && mkdir -p /home/${WWW_USER}/.ssh \
     && chmod 700 /home/${WWW_USER}/.ssh \
     && ssh-keyscan -t rsa github.com >> /home/${WWW_USER}/.ssh/known_hosts \
@@ -231,12 +234,20 @@ RUN if [ "$PHPY_ENABLED" = "true" ]; then \
 # enabled (harmless no-op otherwise, the directory simply won't exist).
 ENV PATH="/opt/php/bin:${PATH}"
 
-# Configure SSH client (this will include the config form the server, but is not used for SSH access).
-COPY config/ssh/ /home/${WWW_USER}/.ssh/
-RUN chown -R ${WWW_USER}:${WWW_USER} /home/${WWW_USER}/.ssh \
-    # Set correct permissions for authorized_keys and id_rsa.
-    && chmod 600 /home/${WWW_USER}/.ssh/authorized_keys || true \
-    && [ -f /home/${WWW_USER}/.ssh/id_rsa ] && chmod 600 /home/${WWW_USER}/.ssh/id_rsa || true
+# Install network/recon tools (nmap, socat), off by default.
+# Useful for debugging, but also useful to an attacker if the container is
+# ever compromised, so they are opt-in.
+RUN if [ "${NETWORK_TOOLS_ENABLE}" = "1" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            nmap \
+            socat \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# No SSH keys are baked into the image: ~/.ssh (created above, with GitHub's
+# known_hosts) is either mounted at runtime (see
+# docker-compose.override-example.yml) or receives the keys copied into the
+# running container. entrypoint.sh fixes its ownership/permissions on start.
 
 # Add configuration to .bashrc of the user.
 COPY config/bash/bashrc /root/add-to-bashrc
@@ -251,9 +262,12 @@ COPY config/ssh/sshd_config /etc/ssh/sshd_config
 
 # Create log directories for Gunicorn and Caddy and Celery.
 # Create directories with more restrictive permissions.
+# /var/log/caddy is root-owned (not the caddy package's default caddy:caddy):
+# Caddy writes there as root, so a directory owned by ${WWW_USER} would let
+# that user swap a log file for a symlink and make root write anywhere.
 RUN mkdir -p /var/log/gunicorn /var/log/caddy /var/log/celery \
+    && chown root:root /var/log/caddy \
     && chown ${WWW_USER}:${WWW_GROUP} /var/log/gunicorn \
-    && chown ${WWW_USER}:${WWW_GROUP} /var/log/caddy \
     && chown ${WWW_USER}:${WWW_GROUP} /var/log/celery \
     && chmod 755 /var/log/gunicorn /var/log/caddy /var/log/celery
 
@@ -269,11 +283,28 @@ COPY config/cron/logrotate /etc/cron.d/logrotate
 COPY config/supervisor/supervisord.conf /etc/supervisor/supervisord.conf
 
 # Copy scripts.
-
+#
+# The Procfile script is the only command WWW_USER may run as root (it
+# re-executes itself through sudo when started by another user). For that
+# rule not to be equivalent to full root, the script and its directory must
+# be root-owned and not writable by anyone else; the script validates every
+# value it takes from its arguments and from the sites directory.
 COPY scripts/start_procfile_supervisord.sh /scripts/start_procfile_supervisord.sh
-RUN chmod +x /scripts/start_procfile_supervisord.sh
+RUN chown root:root /scripts /scripts/start_procfile_supervisord.sh \
+    && chmod 755 /scripts /scripts/start_procfile_supervisord.sh \
+    && echo "${WWW_USER} ALL=(root) NOPASSWD: /scripts/start_procfile_supervisord.sh" \
+        > /etc/sudoers.d/start-procfile-supervisord \
+    && chmod 0440 /etc/sudoers.d/start-procfile-supervisord \
+    && visudo -cf /etc/sudoers.d/start-procfile-supervisord
 
 RUN mkdir -p /run/gunicorn && chmod 777 /run/gunicorn
+
+# Use an entrypoint (writes /etc/container-env.sh and fixes ~/.ssh and the
+# sites directory ownership on every start, then runs CMD).
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chown root:root /usr/local/bin/entrypoint.sh \
+    && chmod 755 /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # Use Supervisor as the main process.
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

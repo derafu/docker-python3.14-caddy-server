@@ -1,0 +1,5 @@
+# Pinned so the CI test is reproducible. celery is required by
+# scripts/start_procfile_supervisord.sh even if the site doesn't use it.
+Django==5.2.7
+gunicorn==23.0.0
+celery==5.5.3

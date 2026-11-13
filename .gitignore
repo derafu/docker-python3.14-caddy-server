@@ -13,3 +13,6 @@ config/ssh/id_rsa.pub
 # per-site files.
 config/caddy/routes.d/*
 !config/caddy/routes.d/.gitkeep
+
+# Lista de tareas local del endurecimiento de seguridad
+TODO-seguridad.md

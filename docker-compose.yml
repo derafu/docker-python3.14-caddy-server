@@ -23,6 +23,7 @@ services:
         PHPY_PHP_VERSION: ${PHPY_PHP_VERSION:-8.5.12}  # PHP version to build when PHPY_ENABLED=true.
         PHPY_PHP_SHA256: ${PHPY_PHP_SHA256:-81a0f450349e84b08eb43faa85f8a4c835684f3cc1c50471775d1317a046c525}  # SHA-256 of that PHP release tarball.
         PHPY_REF: ${PHPY_REF:-6629eec8b95e99843498c59bc1d9294315847f48}  # phpy commit to build.
+        NETWORK_TOOLS_ENABLE: ${NETWORK_TOOLS_ENABLE:-0}  # Install nmap and socat (1) or not (0).
 
     # Name of the container.
     container_name: ${SERVER_NAME:-derafu-sites-server-python-caddy}
